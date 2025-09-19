@@ -175,7 +175,7 @@ var connect = chrome.runtime.connect({ name: "request" });
 function injectJs(path) {
     var s = document.createElement('script');
     // TODO: add "script.js" to web_accessible_resources in manifest.json
-    s.src = chrome.extension.getURL(path);
+    s.src = chrome.runtime.getURL(path);
     s.onload = function () {
         this.remove();
     };
