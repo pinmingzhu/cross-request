@@ -205,7 +205,7 @@ chrome.runtime.onMessage.addListener(function (request, _, cb) {
 	}
 })
 
-function sendAjax(req, successFn, errorFn) {
+function sendAjaxOld(req, successFn, errorFn) {
 	var formDatas;
 	var xhr = new XMLHttpRequest();
 
@@ -298,6 +298,101 @@ function sendAjax(req, successFn, errorFn) {
 	}
 }
 
+
+function sendAjax(req, successFn, errorFn) {
+	// 默认参数设置
+	req.headers = req.headers || {};
+	req.headers['Content-Type'] = req.headers['Content-Type'] || req.headers['Content-type'] || req.headers['content-type']; // 兼容多种写法
+	req.method = req.method || 'GET';
+	req.timeout = req.timeout || 1000000; // 默认超时
+
+	// 处理请求体
+	if (req.method.toLowerCase() !== 'get' && req.method.toLowerCase() !== 'head' && req.method.toLowerCase() !== 'options') {
+		if (!req.headers['Content-Type'] || req.headers['Content-Type'].startsWith('application/x-www-form-urlencoded')) {
+			req.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+			req.data = formUrlencode(req.data);
+		} else if (typeof req.data === 'object' && req.data) {
+			req.data = JSON.stringify(req.data);
+		}
+	} else {
+		delete req.headers['Content-Type'];
+	}
+
+	// 处理查询参数
+	if (req.query && typeof req.query === 'object') {
+		const getUrl = formUrlencode(req.query);
+		req.url += '?' + getUrl;
+		req.query = '';
+	}
+
+	// 设置 fetch 的请求选项
+	const options = {
+		method: req.method,
+		headers: req.headers,
+		body: req.data || null,
+		signal: new AbortController().signal, // 用于处理超时
+	};
+
+	// 处理 unsafe headers
+	const unsafeHeaderArr = [];
+	for (const name in req.headers) {
+		if (unsafeHeader.indexOf(name) > -1) {
+			unsafeHeaderArr.push({
+				name: name,
+				value: req.headers[name]
+			});
+		}
+	}
+	if (unsafeHeaderArr.length > 0) {
+		req.headers['cross-request-unsafe-headers-list'] = encode(unsafeHeaderArr);
+	}
+
+	req.headers['cross-request-open-sign'] = '1';
+
+	// 超时处理
+	const timeout = setTimeout(() => {
+		errorFn({ body: 'Error: Request timeout that the time is ' + req.timeout });
+		controller.abort(); // 取消请求
+	}, req.timeout);
+
+	// 发送请求
+	fetch(req.url, options)
+		.then(response => {
+			clearTimeout(timeout); // 清除超时
+
+			const headers = {};
+			response.headers.forEach((value, name) => {
+				headers[name] = value;
+			});
+
+			if (headers['cross-response-unsafe-headers-list']) {
+				const newHeaders = decode(headers['cross-response-unsafe-headers-list']);
+				delete headers['cross-response-unsafe-headers-list'];
+				if (newHeaders && typeof newHeaders === 'object') {
+					Object.assign(headers, newHeaders);
+				}
+			}
+
+			return response.text().then(body => ({
+				headers,
+				status: response.status,
+				statusText: response.statusText,
+				body
+			}));
+		})
+		.then(response => {
+			if (response.status === 200) {
+				successFn(response);
+			} else {
+				errorFn(response);
+			}
+		})
+		.catch(error => {
+			errorFn({ body: error.message });
+		});
+}
+
+
 chrome.runtime.onConnect.addListener(function (connect) {
 	if (connect.name === 'request') {
 		connect.onMessage.addListener(function (msg) {
@@ -373,15 +468,47 @@ function requestListener (details) {
 	return { requestHeaders: details.requestHeaders };
 }
 
-chrome.webRequest.onHeadersReceived.removeListener(responseListener);
-chrome.webRequest.onBeforeSendHeaders.removeListener(requestListener);
 
-chrome.webRequest.onHeadersReceived.addListener(responseListener, {
-		urls: ["<all_urls>"]
-	}, ['blocking', 'responseHeaders', 'extraHeaders']);
+chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((info) => {
+	console.log("Rule matched:", info);
+});
 
-chrome.webRequest.onBeforeSendHeaders.addListener(requestListener, {
-		urls: ["<all_urls>"]
-	}, ['blocking', 'requestHeaders', 'extraHeaders']);
+
+chrome.declarativeNetRequest.updateDynamicRules({
+	addRules: [
+		{
+			id: 1,
+			priority: 1,
+			action: {
+				type: "modifyHeaders",
+				responseHeaders: [
+					{
+						operation: "set",
+						header: "X-Foo",
+						value: "bar"
+					}
+				]
+			},
+			condition: {
+				urlFilter: "*",
+				resourceTypes: ["main_frame"]
+			}
+		}
+	],
+	removeRuleIds: [1]
+});
+
+
+
+// chrome.webRequest.onHeadersReceived.removeListener(responseListener);
+// chrome.webRequest.onBeforeSendHeaders.removeListener(requestListener);
+//
+// chrome.webRequest.onHeadersReceived.addListener(responseListener, {
+// 		urls: ["<all_urls>"]
+// 	}, ['blocking', 'responseHeaders', 'extraHeaders']);
+//
+// chrome.webRequest.onBeforeSendHeaders.addListener(requestListener, {
+// 		urls: ["<all_urls>"]
+// 	}, ['blocking', 'requestHeaders', 'extraHeaders']);
 
 
